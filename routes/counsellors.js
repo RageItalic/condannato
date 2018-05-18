@@ -113,13 +113,13 @@ router.post('/signup', (req, res) => {
 })
 
 router.get('/latestJournalAnalysis/:clientID', (req, res) => {
-  //change route to bring out latest journal analysis based on user selected.
   if(req.session.userID) {
     console.log("requested")
 
     knex.select('*')
-      .from('journal_entries').where({
-        entry_make_id: req.params.clientID
+      .from('journal_entries')
+      .where({
+        entry_maker_id: req.params.clientID
       })
     .then(response => {
       console.log("RESPONSEÊ", response)
@@ -246,6 +246,136 @@ router.get('/latestJournalAnalysis/:clientID', (req, res) => {
   }
 })
 
+router.get('/analyse/:entryId/:clientId', (req, res) => {
+  if (req.session.userID) {
+    knex('journal_entries')
+      .select('*')
+      .where({
+        entry_id: req.params.entryId,
+        entry_maker_id: req.params.clientId
+      })
+    .then(response => {
+
+      var CipherText = response[0].encrypted_content
+      var DecryptionResult = cryptico.decrypt(CipherText, encryptVars.MjRSAkey)
+      var journal_entry = DecryptionResult.plaintext
+
+      Promise.all([
+        aiApi.getPersonalityInsights(journal_entry),
+        aiApi.analyzeTone(journal_entry),
+        aiApi.understandNaturalLanguage(journal_entry)
+      ]).then(([insightJson, toneJson, languageJson]) => {
+
+        const personalityData = insightJson.personality
+        const toneData = toneJson.document_tone.tone_categories
+        const needsData = insightJson.needs
+        const valuesData = insightJson.values
+        const keywordsData = languageJson.keywords
+
+        console.log("HEILLO", toneData)
+
+        const chartData = {
+          personalityChartData: {
+            labels: [],
+            data: []
+          },
+          toneChartData: {
+            labels: [],
+            data: []
+          },
+          needsChartData: {
+            labels: [],
+            data: []
+          },
+          valuesChartData: {
+            labels: [],
+            data: []
+          },
+          keywordsChartData: {
+            labels: [],
+            data: []
+          }
+        }
+
+        const personalityLabels = [];
+        const personalityNumbers = [];
+
+        const toneLabels = [];
+        const toneNumbers = [];
+
+        const needsLabels = [];
+        const needsNumbers = [];
+
+        const valuesLabels = [];
+        const valuesNumbers = [];
+
+        const keywordsLabels = [];
+        const keywordsNumbers = [];
+
+        personalityData.map(trait => {
+          personalityLabels.push(trait.name)
+          personalityNumbers.push(Math.round((trait.percentile * 100)))
+        })
+
+        toneData.map(category => {
+          if(category.category_name === 'Emotion Tone') {
+            category.tones.map(tone => {
+              toneLabels.push(tone.tone_name)
+              toneNumbers.push(Math.round((tone.score * 100)))
+            })
+          }
+        })
+
+        needsData.map(need => {
+          needsLabels.push(need.name)
+          needsNumbers.push(Math.round((need.percentile * 100)))
+        })
+
+        valuesData.map(value => {
+          valuesLabels.push(value.name)
+          valuesNumbers.push(Math.round((value.percentile * 100)))
+        })
+
+        keywordsData.map(word => {
+          keywordsLabels.push(word.text)
+          keywordsNumbers.push(Math.round((word.relevance * 100)))
+        })
+
+        chartData.personalityChartData.labels = personalityLabels;
+        chartData.personalityChartData.data = personalityNumbers;
+
+        chartData.toneChartData.labels = toneLabels;
+        chartData.toneChartData.data = toneNumbers;
+
+        chartData.needsChartData.labels = needsLabels;
+        chartData.needsChartData.data = needsNumbers;
+
+        chartData.valuesChartData.labels = valuesLabels;
+        chartData.valuesChartData.data = valuesNumbers;
+
+        chartData.keywordsChartData.labels = keywordsLabels;
+        chartData.keywordsChartData.data = keywordsNumbers;
+
+        res.send(chartData);
+      })
+    })
+    .catch(err => {
+      console.log("NONE EXIST?", err)
+      const message = {
+        status: 404,
+        content: 'This user has not journaled yet or this journal entry does not belong to this user.'
+      }
+      res.send(message)
+    })
+  } else {
+    const message = {
+      status: 401,
+      content: 'Unidentified request. You do not seem to be logged in.'
+    }
+    res.send(message)
+  }
+})
+
 
 router.get('/clients/all', (req, res) => {
   if (req.session.userID) {
@@ -271,9 +401,6 @@ router.get('/clients/all', (req, res) => {
 router.get('/clients/:clientID', (req, res) => {
   if (req.session.userID) {
     console.log("SOSOSO", req.params.clientID)
-    // const user = users.find(user => user.id == req.params.clientID)
-    // console.log(user)
-    // res.send(user)
     knex('clients')
       .select('*')
       .where({
@@ -296,6 +423,30 @@ router.get('/clients/:clientID', (req, res) => {
   }
 })
 
+router.get('/clients/:clientID/journal-entries/all', (req, res) => {
+  if (req.session.userID) {
+    knex('journal_entries')
+      .select('*')
+      .where({
+        entry_maker_id: req.params.clientID
+      })
+    .then(entries => {
+      const sortedEntries = entries.sort((a,b) => b.created_at - a.created_at)
+      console.log("FINAL SORTED entries", sortedEntries)
+      res.send(sortedEntries)
+    })
+    .catch(err => {
+      console.log("what could this error be?", err)
+    })
+  } else {
+    const message = {
+      status: 401,
+      content: 'Unidentified request. You do not seem to be logged in.'
+    }
+    res.send(message)
+  }
+})
+
 router.post('/clients/invite', (req, res) => {
   if(req.session.userID) {
     console.log("INVITE THIS CLIENT", req.body.email)
@@ -303,7 +454,7 @@ router.post('/clients/invite', (req, res) => {
     let transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
-        user: 'parthpatelgee@gmail.com',
+        user: process.env.EMAILID,
         pass: process.env.EMAILPASS
       }
     });
@@ -498,8 +649,8 @@ router.post('/getInTouch', (req, res) => {
   let transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
-        user: 'parthpatelgee@gmail.com',
-        pass: 'Tatti814880'
+        user: process.env.EMAILID,
+        pass: process.env.EMAILPASS
       }
     });
 
